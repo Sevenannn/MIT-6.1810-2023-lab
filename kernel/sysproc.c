@@ -5,6 +5,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -90,4 +91,30 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+// trace system calls specified by the mask
+uint64
+sys_trace(void)
+{
+  int n;
+  argint(0, &n);
+
+  myproc() -> trace_mask = n;
+  return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+  uint64 si_pointer; // user pointer to sysinfo struct
+  argaddr(0, &si_pointer);
+
+  struct proc *p = myproc();
+
+  struct sysinfo si;
+  si.freemem = collect_freemem();
+  si.nproc = collect_nproc();
+
+  return copyout(p->pagetable, si_pointer, (char *)&si, sizeof(si));
 }

@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "user.h": "c",
+        "sleeplock.h": "c",
+        "proc.h": "c",
+        "memlayout.h": "c"
+    }
+}
