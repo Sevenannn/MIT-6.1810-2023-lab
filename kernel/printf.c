@@ -133,3 +133,22 @@ printfinit(void)
   initlock(&pr.lock, "pr");
   pr.locking = 1;
 }
+
+void
+backtrace(void)
+{
+  // Read current frame pointer
+  uint64 fp;
+  fp = r_fp();
+
+  printf("backtrace:\n");
+
+  // Terminate the loop when top address of stack is not larger than bottom address
+  while (PGROUNDDOWN(fp) < PGROUNDUP(fp)) {
+    uint64 ret;
+    ret = *(uint64*) (fp - 8);
+    fp = *(uint64*) (fp - 16);
+    // Print return address of each stack frame
+    printf("%p\n", ret);
+  }
+}
