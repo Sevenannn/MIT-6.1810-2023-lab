@@ -21,12 +21,17 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  // List to keep reference count of physical addresses
+  int ref_cnt[(uint64)PHYSTOP / PGSIZE];
 } kmem;
 
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  for (int i = 0; i < (uint64)PHYSTOP / PGSIZE; i++)
+    kmem.ref_cnt[i] = 1;
+
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -51,6 +56,18 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  if (kref_read((uint64)pa) <= 0) {
+    panic("Page already freed");
+  }
+
+  // Decerease the reference count of PA
+  kref_decrease((uint64)pa);
+
+  // Free PA only when reference count is 0
+  if (kref_read((uint64)pa) > 0) {
+    return;
+  }
+  
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
@@ -72,11 +89,39 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    kmem.ref_cnt[(uint64) r / PGSIZE] = 1;
+  }
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+// Helper fnction to read current reference count of a physical address
+int
+kref_read(uint64 pa){
+  int cnt;
+  acquire(&kmem.lock);
+  cnt = kmem.ref_cnt[pa / PGSIZE];
+  release(&kmem.lock);
+  return cnt;
+}
+
+// Helper function to increase reference count to a phyiscal address
+void
+kref_increase(uint64 pa){
+  acquire(&kmem.lock);
+  kmem.ref_cnt[pa / PGSIZE]++;
+  release(&kmem.lock);
+}
+
+// Helper function to decrease reference count to a physical address
+void
+kref_decrease(uint64 pa){
+  acquire(&kmem.lock);
+  kmem.ref_cnt[pa / PGSIZE]--;
+  release(&kmem.lock);
 }

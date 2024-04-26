@@ -29,6 +29,44 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+// Helper function to handle copy on write
+// Copy parents' / old PA to a newly allocated PA
+// Map child's VA mapped to a new PA
+int
+copyonwrite(pagetable_t pagetable, uint64 va) {
+    if (va >= MAXVA) {
+      return -1;
+    }
+
+    pte_t *pte = walk(pagetable, va, 0);
+    if(pte == 0)
+      return -1;
+
+    if ((*pte & PTE_V) == 0 || (*pte & PTE_U) == 0) {
+      return -1;
+    }
+
+    uint64 pa = PTE2PA(*pte);
+    if(pa == 0) {
+      return -1;
+    }
+
+    if (*pte & PTE_COW) {
+      uint flags = PTE_FLAGS(*pte);
+      flags |= PTE_W;
+      flags &= ~(PTE_COW);
+      // Allocate a new page of physical memory
+      char *mem = kalloc();
+      if(mem == 0)
+        // Panic if there's no more physical memory
+        return -1;
+      memmove(mem, (char*)pa, PGSIZE);
+      mappages(pagetable, va, PGSIZE, (uint64) mem, flags);
+      kfree((void *)pa);
+    }
+    return 0;
+}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -67,7 +105,15 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if (r_scause() == 15 || r_scause() == 13) {
+    uint64 addr = r_stval();
+    if (addr >= MAXVA || (addr < p->trapframe->sp && addr >= (p->trapframe->sp - PGSIZE)))
+      p->killed = 1;
+    if (copyonwrite(p->pagetable, PGROUNDDOWN(r_stval())) < 0) {
+      p->killed = 1;
+    }
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     setkilled(p);
