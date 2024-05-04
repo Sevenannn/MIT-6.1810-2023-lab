@@ -1,0 +1,3 @@
+Suppose thread 1 and thread 2 both putting entries with new keys that haven’t appear before. Thread 1 putting key m, thread 2 putting key n. m != n
+Both thread 1 & 2 will try to insert new entry, since m & n haven’t appeared in the entry list before. Suppose the original head of entry linked list is e_orig. The entry therad 1 adding is e_1, entry thread 2 adding is e_2. e_1 holds key value m and e_2 holds key value n.
+Both will try to hook up e_orig at the same time and become new head. So if e_1 first hooked with e_orig, e_2 then will hooked with e_orig, causing e_1 missing, and therefore causing the key of value missing.
