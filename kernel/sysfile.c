@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -503,3 +504,175 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr, len, offset;
+  int prot, flags, fd;
+  struct file *f;
+
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  argaddr(5, &offset);
+
+  if (argfd(4, &fd, &f) < 0 || len == 0)
+    return -1;
+
+  if (((prot & PROT_READ) && !f->readable) || ((prot & PROT_WRITE) && !f->writable && !(flags & MAP_PRIVATE)))
+    return -1;
+
+  len = PGROUNDUP(len);
+
+  struct vma *v = 0;
+  struct proc *p = myproc();
+  uint64 prev_va_end = MMAPBOUND;
+
+  for (int i = 0; i < NVMA; i++) {
+    struct vma *vi = &p->vmas[i];
+    if (!vi->valid) {
+      if (v == 0) {
+        v = vi;
+        v->valid = 1;
+      }
+    } else if (prev_va_end > vi->va) {
+      prev_va_end = PGROUNDDOWN(vi->va);
+    }
+  }
+
+  if (v == 0)
+    panic ("mmap: no free vma");
+
+  // Increase reference count for the file
+  filedup(f);
+
+  // Add VMA
+  v->va = prev_va_end - len;
+  v->len = len;
+  v->offset = offset;
+  v->prot = prot;
+  v->flags = flags;
+  v->f = f;
+  
+  return v->va;
+}
+
+// Helper function to allocate physical memory when page-fault happened in mmaped-region
+int
+vma_pa_alloc(uint64 va) {
+  struct proc *p = myproc();
+  struct vma *v = 0;
+
+  // Find the vma given va
+  for (int i = 0; i < NVMA; i++) {
+    struct vma *vi = &p->vmas[i];
+    if (va >= vi->va && va < vi->va + vi->len && vi->valid) {
+      v = vi;
+      break;
+    }
+  }
+  if (!v)
+    return 0;
+
+  void *pa = kalloc();
+  if (!pa) {
+    panic("vma_pa_alloc: kalloc");
+  };
+  memset(pa, 0, PGSIZE);
+
+  // Lazy read data from file starting at offset
+  begin_op();
+  ilock(v->f->ip);
+  readi(v->f->ip, 0, (uint64)pa, v->offset + va - v->va, PGSIZE);
+  iunlock(v->f->ip);
+  end_op();
+
+  // set appropriate perms, then map it.
+  int perm = PTE_U;
+  if(v->prot & PROT_READ)
+    perm |= PTE_R;
+  if(v->prot & PROT_WRITE)
+    perm |= PTE_W;
+  if(v->prot & PROT_EXEC)
+    perm |= PTE_X;
+
+  if(mappages(p->pagetable, va, PGSIZE, (uint64)pa, PTE_R | PTE_W | PTE_U) < 0) {
+    panic("vma_pa_alloc: mappages");
+  }
+
+  return 1;
+}
+
+void
+vma_pa_unmap(pagetable_t pagetable, uint64 va, uint64 len, struct vma *v)
+{
+  uint64 a;
+  pte_t *pte;
+
+  for(a = va; a < va + len; a += PGSIZE){
+    if((pte = walk(pagetable, a, 0)) == 0)
+      panic("vma_pa_unmap: walk");
+    if(PTE_FLAGS(*pte) == PTE_V)
+      panic("vma_pa_unmap: not a leaf");
+    // No panic when mapping doesn't exist
+    if((*pte & PTE_V)){
+      uint64 pa = PTE2PA(*pte);
+      if ((*pte & PTE_D) && (v->flags & MAP_SHARED)) {
+        begin_op();
+        ilock(v->f->ip);
+        writei(v->f->ip, 0, pa, v->offset + a - v->va, PGSIZE);
+        iunlock(v->f->ip);
+        end_op();
+      }
+      kfree((void*)pa);
+      *pte = 0;
+    }
+  }
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr, len;
+
+  argaddr(0, &addr);
+  argaddr(1, &len);
+
+  struct proc *p = myproc();
+  struct vma *v = 0;
+
+  // Find the vma given va
+  for (int i = 0; i < NVMA; i++) {
+    struct vma *vi = &p->vmas[i];
+    if (addr >= vi->va && addr < vi->va + vi->len && vi->valid) {
+      v = vi;
+      break;
+    }
+  }
+  if (!v)
+    return -1;
+
+  // VMA has to be a contiguous area
+  if(addr > v->va && addr + len < v->va + v->len) {
+    return -1;
+  }
+
+  vma_pa_unmap(p->pagetable, PGROUNDUP(addr), len, v);
+
+  if(addr == v->va) {
+    v->offset += len;
+    v->va += len;
+    v->len -= len;
+    if(len == v->len) {
+      fileclose(v->f);
+      v->valid = 0;
+    }
+  } else {
+    v->len -= len;
+  }
+
+  return 0;
+}
+

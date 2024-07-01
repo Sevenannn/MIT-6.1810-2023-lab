@@ -12,6 +12,7 @@ struct spinlock;
 struct sleeplock;
 struct stat;
 struct superblock;
+struct vma;
 #ifdef LAB_NET
 struct mbuf;
 struct sock;
@@ -198,6 +199,10 @@ void            plic_complete(int);
 void            virtio_disk_init(void);
 void            virtio_disk_rw(struct buf *, int);
 void            virtio_disk_intr(void);
+
+// helper function for lab 10
+int             vma_pa_alloc(uint64 va);
+void			vma_pa_unmap(pagetable_t pagetable, uint64 va, uint64 len, struct vma *v);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
